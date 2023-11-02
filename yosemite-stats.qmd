@@ -24,18 +24,11 @@ library(scales)
 library(tmap)
 
 data_joined_2018 <- readRDS("data-app/2018_joined_data.rds")
-## CA prototype joined 2018 metadata ----
-data_joined_2018_metadata <- read_csv("data-app/data_joined_2018_metadata.csv")
-## CA ACS all ----
-data_ca_acs_2018 <- readRDS("data-app/2018_ca_acs_all.rds")
 ## data relationship 2018 ----
-data_education_relationship_plots <- readRDS("data-app/education_relationship_plots.rds")
-data_language_relationship_plots <- readRDS("data-app/language_relationship_plots.rds")
 data_median_income_relationship_plots <- readRDS("data-app/median_income_relationship_plots.rds")
 data_race_relationship_plots <- readRDS("data-app/race_relationship_plots.rds")
 ## visitorsheds ----
 data_state_geometries <- readRDS("data-app/states_geometries.rds")
-data_ca_zip_code_geometries <- readRDS("data-app/ca_zip_codes_geometries.rds")
 ```
 
 In 2018, there were 94,165 overnight campsite reservations made to Yosemite National Park.
