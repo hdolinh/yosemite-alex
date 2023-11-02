@@ -1,0 +1,579 @@
+---
+title: "Yosemite Recreation Data"
+author: "Halina Do-Linh"
+format: 
+  html:
+    embed-resources: true
+---
+
+```{r}
+#| label: setup
+#| echo: false
+#| warning: false
+
+library(tidyverse)
+library(tidycensus)
+library(vroom)
+library(here)
+library(janitor)
+library(zipcodeR)
+library(sf)
+library(knitr)
+library(plotly)
+library(scales)
+library(tmap)
+
+data_joined_2018 <- readRDS("data-app/2018_joined_data.rds")
+## CA prototype joined 2018 metadata ----
+data_joined_2018_metadata <- read_csv("data-app/data_joined_2018_metadata.csv")
+## CA ACS all ----
+data_ca_acs_2018 <- readRDS("data-app/2018_ca_acs_all.rds")
+## data relationship 2018 ----
+data_education_relationship_plots <- readRDS("data-app/education_relationship_plots.rds")
+data_language_relationship_plots <- readRDS("data-app/language_relationship_plots.rds")
+data_median_income_relationship_plots <- readRDS("data-app/median_income_relationship_plots.rds")
+data_race_relationship_plots <- readRDS("data-app/race_relationship_plots.rds")
+## visitorsheds ----
+data_state_geometries <- readRDS("data-app/states_geometries.rds")
+data_ca_zip_code_geometries <- readRDS("data-app/ca_zip_codes_geometries.rds")
+```
+
+In 2018, there were 94,165 overnight campsite reservations made to Yosemite National Park.
+
+```{r}
+#| label: all yosemite campsite reservations
+#| echo: false
+
+yosemite_all <- data_joined_2018 %>% 
+  filter(admin_unit == "Yosemite National Park")
+```
+
+See the breakdown of number of reservations made at each Yosemite campground from highest to lowest.
+
+```{r}
+#| echo: false
+ym_parks <- yosemite_all %>% 
+  count(park,
+        sort = TRUE) %>% 
+  knitr::kable()
+
+ym_parks
+```
+
+Since Upper Pines was the most visited campsite at Yosemite in 2018 -- we'll look at the data for that campsite more deeply.
+
+## Booking Window:
+
+```{r}
+#| label: booking window function
+#| echo: false
+not_reactive_booking_window_plot <- function(admin_unit, site, ridb_df){
+  
+  # data frame
+  data <- ridb_df %>%
+    filter(park == site,
+           booking_window > 0,
+           booking_window != "Inf") %>% 
+    select(park, booking_window) %>% 
+    filter(!is.na(booking_window))
+  
+  
+  # wrangling
+  x_max <- numeric(0)
+  if(length(data) != 0) {
+    
+    x_max <- (round(max(data$booking_window) / 5) * 5) + 5 # max x rounded to nearest 5
+  }
+  
+  quant_80 <- numeric()
+  if(length(data) != 0) {
+    
+    quant_80 <- quantile(x = data$booking_window,
+                         probs = seq(0, 1, 0.1))[[9]] %>% round(0)
+  }
+  
+  # parameters
+  hist_colors <- c("#64863C", "#466C04")
+  quant_80_color <- c("#FACE00")
+  caption_color <- c("#ac8d00")
+  
+  plotly <- ggplot(
+    data = data) +
+    geom_histogram(aes(x = booking_window,
+                        text = paste0(scales::percent(after_stat(count) / nrow(data), accuracy = 0.1), 
+                                     " of all visits are reserved between ", 
+                                     scales::comma(xmin, accuracy = 1), 
+                                     " and ", 
+                                     scales::comma(xmax, accuracy = 1),
+                                     " days before the start of the visit",
+                                     "<br>",
+                                     "(Total reservations to site: ",
+                                     scales::comma(nrow(data), accuracy = 1), ")")),
+                   binwidth = 7,
+                   center = 7 / 2,
+                   fill = hist_colors[[1]], 
+                   col = hist_colors[[2]], size = 0.05) +
+    labs(x = "Days in advance before visit (each bar = 1 week)",
+         y = "") +
+    scale_x_continuous(limits = c(0, x_max)) +
+    geom_vline(xintercept = quant_80,
+               linetype = "dashed", alpha = 0.5, color = quant_80_color) +
+    theme_minimal() +
+    theme(plot.background = element_rect("white"),
+          panel.grid.major.y = element_blank())
+  
+  # add 6 month / 1 year annotation if data allows
+  if (x_max <= 180) {
+    # don't include 6 month or 1 year annotation
+    plotly
+    
+  } else if (x_max > 180 & x_max <= 360){
+    # include 6 month annotation
+    plotly <- plotly +
+      geom_vline(xintercept = 180, 
+                 linetype = "dashed", linewidth = .3, alpha = .5) +
+      annotate("text", label = "6 months",  size = 3,
+               x = 180, y = 5)
+    
+  } else if (x_max >= 360) {
+    
+    # include 6 month and 1 year annotation
+    plotly <- plotly +
+      geom_vline(xintercept = 180, 
+                 linetype = "dashed", linewidth = .3, alpha = .5) +
+      annotate("text", label = "6 months", size = 3,
+               x = 180, y = 5) +
+      geom_vline(xintercept = 360,
+                 linetype = "dashed", linewidth = .3, alpha = .5) +
+      annotate("text", label = "1 year", size = 3,
+               x = 360, y = 5)
+  } # EO else if for plotly
+  
+  # create plotly
+  ggplotly(plotly,
+           tooltip = list("text"),
+           dynamicTicks = TRUE) %>% 
+    layout(title = list(text = paste0('<b>', site, '<br>', admin_unit, '</b>',
+                                      '<br>',
+                                      'Number of days from reservation to start of visit'),
+                        font = list(size = 15)),
+           xaxis = list(separatethousands = TRUE),
+           yaxis = list(separatethousands = TRUE),
+           margin = list(b = 130, t = 100), 
+           annotations =  list(x = x_max/2, y = -0.6, 
+                               text = paste0("80% of reservations reserve their visit less than ", '<b>', quant_80, '</b>', 
+                                             " days before the start date", 
+                                             "<br>",
+                                             "(shown on plot with blue dashed line)."), 
+                               showarrow = F, 
+                               xre = 'paper', yref = 'paper', 
+                               xanchor = 'middle', yanchor = 'auto', 
+                               xshift = 0, yshift = 0,
+                               font = list(size = 12, color = caption_color))) %>%
+    config(modeBarButtonsToRemove = list("pan", "select", "lasso2d", "autoScale2d", 
+                                         "hoverClosestCartesian", "hoverCompareCartesian"))
+  
+  
+} # EO function
+```
+
+
+```{r}
+#| label: booking window plot
+#| echo: false
+#| warning: false
+not_reactive_booking_window_plot(admin_unit = "Yosemite National Park",
+                                 site = "Upper Pines",
+                                 ridb_df = data_joined_2018)
+```
+
+
+## Distance Traveled by Median Income
+
+```{r}
+#| label: distance traveled function
+#| echo: false
+not_reactive_median_income_dist_travel_plot <- function(admin_unit,
+                                                        site,
+                                                        median_income_decile_df) {
+  # create dataframe and further subset
+  plot_data <- median_income_decile_df %>%
+    # filter to user site of choice
+    filter(park == site) %>%
+    # select to variables of interest
+    select(park,
+           customer_zip,
+           median_income_binned,
+           distance_traveled_mi) %>%
+    drop_na(median_income_binned) %>%
+    # summarize to inner quartile range, median, and total reservations
+    group_by(median_income_binned) %>%
+    summarize(
+      median_distance_traveled_mi = median(distance_traveled_mi),
+      quartile_lower = quantile(distance_traveled_mi)[[2]],
+      quartile_upper = quantile(distance_traveled_mi)[[4]],
+      count = n()
+    )
+  
+  # create plot
+  plotly <- ggplot(data = plot_data,
+                   aes(x = median_distance_traveled_mi,
+                       y = median_income_binned)) +
+    geom_segment(aes(xend = 0, yend = median_income_binned)) +
+    geom_point(
+      aes(
+        color = median_income_binned,
+        fill = median_income_binned,
+        text = paste0(
+          scales::comma(count, accuracy = 1),
+          " unique visits were made by people who live in ZIP codes with a<br>median household income between ",
+          median_income_binned,
+          ". Typically these visitors<br>traveled between ",
+          scales::comma(quartile_lower, accuracy = 1),
+          " and ",
+          scales::comma(quartile_upper, accuracy = 1),
+          " miles, with a median distance of ",
+          scales::comma(median_distance_traveled_mi, accuracy = 1),
+          " miles."
+        )
+      ),
+      size = 3.5,
+      shape = 21,
+      stroke = 2
+    ) +
+    scale_y_discrete(expand = c(0.2, 0)) +
+    scale_fill_viridis_d(direction = -1) +
+    scale_color_viridis_d(direction = -1) +
+    labs(x = paste("Estimated Distance Traveled from Home to Site (miles)"),
+         y = "") +
+    theme_minimal() +
+    theme(
+      plot.background = element_rect("white"),
+      panel.grid.major.y = element_blank(),
+      legend.position = "none"
+    )
+  
+  # create plotly
+  ggplotly(plotly,
+           tooltip = list("text")) %>%
+    config(
+      modeBarButtonsToRemove = list(
+        "pan",
+        "select",
+        "lasso2d",
+        "autoScale2d",
+        "hoverClosestCartesian",
+        "hoverCompareCartesian"
+      )
+    ) %>%
+    layout(title = list(
+      text = paste0(
+        '<b>',
+        site,
+        '<br>',
+        admin_unit,
+        '</b>',
+        '<br>',
+        'Distance Traveled by Visitors with Different Median Household Incomes'
+      ),
+      font = list(size = 15)
+    ))
+  
+} # EO function
+```
+
+
+```{r}
+#| label: distance traveled plot
+#| echo: false
+#| warning: false
+not_reactive_median_income_dist_travel_plot(admin_unit = "Yosemite National Park",
+                                            site = "Upper Pines",
+                                            median_income_decile_df = data_median_income_relationship_plots)
+
+```
+
+## Median Income
+
+```{r}
+#| label: median income function
+#| echo: false
+not_reactive_median_income_top_quartile_res_plot <- function(admin_unit, 
+                                                             site, 
+                                                             median_income_decile_df){
+  
+  # create reactive dataframe and further subset
+  plot_data <- median_income_decile_df %>%
+      # filter to user site of choice
+      filter(park == site) %>%
+      # select the variables of interest
+      select(park, customer_zip, median_income_binned) %>% 
+      drop_na(median_income_binned) %>% 
+      # summarize to total reservations
+      group_by(median_income_binned) %>% 
+      summarize(count = n())
+  
+  # create plot
+  plotly <- ggplot(data = plot_data) +
+    geom_col(aes(x = count,
+                 y = median_income_binned,
+                 fill = median_income_binned,
+                 text = paste0(scales::comma(count, accuracy = 1), 
+                               " reservations were made<br>by people who live in ZIP codes<br>with median-incomes between<br>", 
+                               median_income_binned, "."))) +
+    scale_x_continuous(labels = comma_format(accuracy = 1)) +
+    scale_y_discrete(expand = c(0.2, 0)) +
+    scale_fill_viridis_d(direction = -1) +
+    scale_color_viridis_d(direction = -1) +
+    labs(x = paste("Number of Reservations"),
+         y = "") + 
+    theme_minimal() +
+    theme(plot.background = element_rect("white"),
+          panel.grid.major.y = element_blank(),
+          legend.position = "none",
+          axis.title.x = element_text(size = 8),
+          axis.title.y = element_text(size = 8))
+  
+  # create plotly
+  ggplotly(plotly,
+           tooltip = list("text"),
+           width = 550,
+           height = 450) %>%
+    config(modeBarButtonsToRemove = list("zoom", "pan", "select", "zoomIn", "zoomOut", "lasso2d", "resetScale2d",
+                                         "autoScale2d", "hoverClosestCartesian", "hoverCompareCartesian")) %>% 
+    layout(title = list(text = paste0("Reservations to this site from<br>ZIP codes with median-incomes of:"),
+                        font = list(size = 14.5)))
+  
+} # EO function
+```
+
+```{r}
+#| label: median income plot
+#| echo: false
+#| warning: false
+not_reactive_median_income_top_quartile_res_plot(admin_unit = "Yosemite National Park",
+                                            site = "Upper Pines",
+                                            median_income_decile_df = data_median_income_relationship_plots)
+```
+
+## Distance Traveled by Race
+
+```{r}
+#| label: dist travel race function
+#| echo: false
+not_reactive_race_dist_travel_plot <- function(admin_unit, 
+                                               site,
+                                               race_top_quartile_df){
+  
+  # create dataframe and further subset
+  plot_data <- race_top_quartile_df %>%
+    # filter to user site of choice
+    filter(park == site) %>%
+    # select to variables of interest
+    select(park, customer_zip, 
+           race, race_percentage,
+           distance_traveled_mi) %>% 
+    drop_na(distance_traveled_mi, race_percentage) %>% 
+    # summarize to inner quartile range, median, and total reservations
+    group_by(race) %>%
+    summarize(median_distance_traveled_mi = median(distance_traveled_mi),
+              quartile_lower = quantile(distance_traveled_mi)[[2]],
+              quartile_upper = quantile(distance_traveled_mi)[[4]],
+              count = n())
+  
+  # parameters
+  race_group_colors <- c("Other Race(s)" = "#999999", "Pacific Islander" = "#E69F00", "Multiracial" = "#56B4E9",
+                         "Asian" = "#009E73", "Black" = "#F0E442", "White" = "#0072B2", 
+                         "Native American" = "#D55E00", "Hispanic Latinx" = "#CC79A7")
+  
+  # create plot
+  plotly <- ggplot(data = plot_data, 
+                   aes(x = median_distance_traveled_mi,
+                       y = reorder(race, median_distance_traveled_mi))) +
+    geom_segment(aes(xend = 0, yend = race)) +
+    geom_point(aes(color = race, fill = race,
+                   text = paste0(scales::comma(count, accuracy = 1), 
+                                 " unique visits were made by people who live in ZIP codes<br>with high ",
+                                 race, " populations. Typically these visitors traveled between<br>",
+                                 scales::comma(quartile_lower, accuracy = 1), 
+                                 " and ", 
+                                 scales::comma(quartile_upper, accuracy = 1), 
+                                 " miles, with a median distance of ", 
+                                 scales::comma(median_distance_traveled_mi, accuracy = 1), 
+                                 " miles.")),
+               size = 3.5, 
+               shape = 21, stroke = 2) +
+    scale_y_discrete(expand = c(0.45, 0)) +
+    scale_fill_manual(values = race_group_colors) +
+    scale_color_manual(values = race_group_colors) +
+    labs(x = paste("Estimated Distance Traveled from Home to Site (miles)"),
+         y = "") + 
+    theme_minimal() +
+    theme(plot.background = element_rect("white"),
+          panel.grid.major.y = element_blank(),
+          legend.position = "none")
+  
+  # create plotly
+  ggplotly(plotly,
+           tooltip = list("text")) %>%
+    config(modeBarButtonsToRemove = list("zoom", "pan", "select", "lasso2d", "autoScale2d", 
+                                         "hoverClosestCartesian", "hoverCompareCartesian")) %>% 
+    layout(title = list(text = paste0('<b>', site, '<br>', admin_unit, '</b>',
+                                      '<br>',
+                                      'Distance Traveled by Different Racial Groups'),
+                        font = list(size = 15))) %>%
+    add_annotations(text = "Reservations from ZIP codes<br>with high proportions of:", 
+                    x = -0.5, y = 0.9, 
+                    font = list(size = 11),
+                    xref = 'paper', yref = 'paper', 
+                    showarrow = FALSE)
+  
+} # EO function
+```
+
+```{r}
+#| label: dist travel race plot
+#| echo: false
+#| warning: false
+not_reactive_race_dist_travel_plot(admin_unit = "Yosemite National Park",
+                                   site = "Upper Pines",
+                                   data_race_relationship_plots)
+```
+
+## Race
+
+```{r}
+#| label: race function
+#| echo: false
+not_reactive_race_top_quartile_res_plot <- function(admin_unit, 
+                                                    site,
+                                                    race_top_quartile_df){
+  
+  # create reactive dataframe and further subset
+  plot_data <- race_top_quartile_df %>%
+    # filter to user site of choice
+    filter(park == site) %>%
+    # select to variables of interest
+    select(park, customer_zip, 
+           race, race_percentage) %>% 
+    drop_na(race_percentage) %>% 
+    # summarize to inner quartile range, median, and total reservations
+    group_by(race) %>%
+    summarize(count = n())
+  
+  # parameters
+  race_group_colors <- c("Other Race(s)" = "#999999", "Pacific Islander" = "#E69F00", "Multiracial" = "#56B4E9",
+                         "Asian" = "#009E73", "Black" = "#F0E442", "White" = "#0072B2", 
+                         "Native American" = "#D55E00", "Hispanic Latinx" = "#CC79A7")
+  
+  # create plot
+  plotly <- ggplot(data = plot_data) +
+    geom_col(aes(x = count,
+                 y = reorder(race, count),
+                 fill = race,
+                 text = paste0(scales::comma(count, accuracy = 1), 
+                               " reservations were made<br>by people who live in<br>ZIP codes with high<br>", 
+                               race, " populations."))) +
+    scale_x_continuous(labels = comma_format(accuracy = 1)) +
+    scale_y_discrete(expand = c(0.1, 0)) +
+    scale_fill_manual(values = race_group_colors) +
+    scale_color_manual(values = race_group_colors) +
+    labs(x = paste("Number of Reservations"),
+         y = "") + 
+    theme_minimal() +
+    theme(plot.background = element_rect("white"),
+          panel.grid.major.y = element_blank(),
+          legend.position = "none",
+          axis.title.x = element_text(size = 8),
+          axis.title.y = element_text(size = 8))
+  
+  # create plotly
+  ggplotly(plotly,
+           tooltip = list("text"),
+           height = 600,
+           width = 450) %>%
+    config(modeBarButtonsToRemove = list("zoom", "pan", "select", "zoomIn", "zoomOut", "lasso2d", "resetScale2d",
+                                         "autoScale2d", "hoverClosestCartesian", "hoverCompareCartesian")) %>% 
+    layout(title = list(text = paste0("Number of Reservations to this site coming from<br>ZIP codes with high proportions of:"),
+                        font = list(size = 14.5)))
+  
+} # EO function
+```
+
+```{r}
+#| label: race plot
+#| echo: false
+#| warning: false
+not_reactive_race_top_quartile_res_plot(admin_unit = "Yosemite National Park",
+                                        site = "Upper Pines",
+                                        data_race_relationship_plots)
+```
+
+## Visitorshed
+
+```{r}
+#| label: national visitorshed function
+#| echo: false
+not_reactive_state_visitorshed_map <-
+  function(site, ridb_df, state_geometries_df) {
+    ## -- data wrangle -- ##
+    # reactive dataframe of number of reservations per state
+    data <- ridb_df %>%
+      filter(park %in% site) %>%
+      group_by(customer_zip_state_full, customer_zip_state) %>%
+      summarize(number_reservations = n()) %>%
+      filter(!is.na(customer_zip_state_full))
+    
+    # add geometries
+    map_data <-
+      state_geometries_df %>%
+      left_join(y = data,
+                by = c("state_abbrev" = "customer_zip_state"))
+    
+    
+    ## -- create map -- ##
+    tmap_mode("view")
+    
+    tm_shape(map_data) +
+      tm_borders(col = "grey", alpha = 0.5) +
+      tm_fill(
+        col = "number_reservations",
+        title = "Number of Visits",
+        palette = "YlGn",
+        n = 10,
+        style = "jenks",
+        id = "customer_zip_state_full",
+        popup.vars = c("Total Visits" = "number_reservations")
+      ) +
+      tm_view(set.view = c(-101.834335, 40.022356, 2.5)) # update zoom
+    
+  }
+
+```
+
+```{r}
+#| label: national visitorshed plot
+#| echo: false
+#| warning: false
+not_reactive_state_visitorshed_map(site = "Upper Pines",
+                                   ridb_df = data_joined_2018, 
+                                   state_geometries_df = data_state_geometries)
+```
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
