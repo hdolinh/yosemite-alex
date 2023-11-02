@@ -5,6 +5,7 @@
 # Session Data files
 .RData
 .RDataTmp
+.DS_Store
 
 # User-specific files
 .Ruserdata
@@ -49,4 +50,4 @@ po/*~
 rsconnect/
 
 # data 
-data/
+data*/
