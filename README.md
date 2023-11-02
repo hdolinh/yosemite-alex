@@ -1,2 +1,2 @@
 # yosemite-alex
-yosemite RIDB x Census stats
+[Yosemite RIDB x Census stats](yosemite-stats.html)
